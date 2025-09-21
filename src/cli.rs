@@ -13,7 +13,7 @@ use crate::config::{AUTHOR, VERSION, ABOUT, LONG_ABOUT, NAME};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 }
 
 #[derive(Subcommand)]

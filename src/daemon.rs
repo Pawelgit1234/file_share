@@ -1,9 +1,13 @@
-use std::fs::{File};
+use std::fs::File;
 use std::fs;
+use std::path::Path;
 
 use daemonize::Daemonize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
+use serde::{Deserialize, Serialize};
 
-use crate::config::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, DAEMON_PID_PATH};
+use crate::config::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, DAEMON_PID_PATH, DAEMON_SOCKET_PATH};
 
 pub fn start_daemon<F, Fut>(callback: F)
 where
@@ -26,9 +30,77 @@ where
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(callback());
+                .block_on(async {
+                    tokio::spawn(start_listener());
+                    callback().await;
+                });
         }
         Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Command {
+    Add { path: String, name: Option<String> },
+    Delete { name: String },
+    List,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Response {
+    Ok(String),
+    Err(String),
+    List(), // TODO: data
+}
+
+pub async fn send_command(cmd: Command) -> anyhow::Result<Response> {
+    let mut stream = UnixStream::connect(DAEMON_SOCKET_PATH).await?;
+
+    // sends command
+    let encoded: Vec<u8> = bincode::serialize(&cmd)?;
+    stream.write(&encoded).await?;
+
+    // response
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await?;
+    let resp: Response = bincode::deserialize(&buf[..n])?;
+
+    Ok(resp)
+}
+
+async fn start_listener() {
+    if Path::new(DAEMON_SOCKET_PATH).exists() {
+        let _ = std::fs::remove_file(DAEMON_SOCKET_PATH);
+    }
+
+    let listener = UnixListener::bind(DAEMON_SOCKET_PATH).unwrap();
+
+    loop {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1024];
+            match socket.read(&mut buf).await {
+                Ok(n) if n > 0 => {
+                    let cmd: Result<Command, _> = bincode::deserialize(&buf[..n]);
+                    let response = match cmd {
+                        Ok(Command::Add { path, name }) => {
+                            Response::Ok("File added".into())
+                        }
+                        Ok(Command::Delete { name }) => {
+                            Response::Ok("File deleted".into())
+                        }
+                        Ok(Command::List) => {
+                            Response::Ok("LIST".into())
+                        }
+                        Err(e) => Response::Err(format!("Invalid command: {e}"))
+                    };
+
+                    let encoded = bincode::serialize(&response).unwrap();
+                    let _ = socket.write_all(&encoded).await;
+                }
+                _ => {}
+            }
+        });
     }
 }
 
@@ -45,5 +117,14 @@ pub fn stop_daemon() {
         }
     } else {
         eprintln!("No running daemon found");
+    }
+}
+
+pub fn handle_response(result: anyhow::Result<Response>) {
+    match result {
+        Ok(Response::Ok(msg)) => println!("{msg}"),
+        Ok(Response::Err(msg)) => eprintln!("{msg}"),
+        Ok(_) => {}
+        Err(e) => eprint!("Error sending command: {e}"),
     }
 }

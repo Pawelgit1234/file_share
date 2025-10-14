@@ -1,4 +1,5 @@
 mod network;
+mod core;
 
 mod cli;
 mod daemon;
@@ -9,7 +10,8 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use daemon::{start_daemon, stop_daemon};
 
-use crate::daemon::{ handle_response, send_command, Command, Response };
+use daemon::{ handle_response, send_command, Command };
+use network::Server;
 
 #[tokio::main]
 async fn main() {
@@ -17,8 +19,9 @@ async fn main() {
 
     match cli.command {
         Commands::Start { port, password } => {
-            start_daemon(|| async {
-                println!("Hello World");
+            start_daemon(move || async move {
+                let server = Server::new(password);
+                server.run(port).await;
             });
         }
         Commands::Stop => {

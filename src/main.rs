@@ -21,7 +21,9 @@ async fn main() {
         Commands::Start { port, password } => {
             start_daemon(move || async move {
                 let server = Server::new(password);
-                server.run(port).await;
+                if let Err(err) = server.run(port).await {
+                    eprintln!("Error by start of server: {err}");
+                }
             });
         }
         Commands::Stop => {

@@ -63,9 +63,11 @@ impl Server {
         files.remove(name);
     }
 
-    pub async fn list_files(&self) -> Vec<String> {
+    pub async fn list_files(&self) -> HashMap<String, String> {
         let files = self.files.read().await;
-        files.keys().cloned().collect()
+        files.iter()
+            .map(|(k, v)| (k.clone(), v.to_string_lossy().to_string()))
+            .collect()
     }
 
     async fn handle_client<S>(
@@ -97,8 +99,8 @@ impl Server {
 
             match req {
                 Request::List => {
-                    let files = files.read().await;
-                    send_message(&mut socket, &*files).await?;
+                    let files = files.read().await.keys().cloned().collect::<Vec<String>>();
+                    send_message(&mut socket, &Response::List(files)).await?;
                 }
                 Request::Download(name) => {
                 

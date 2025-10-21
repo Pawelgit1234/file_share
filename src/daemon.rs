@@ -1,17 +1,20 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use daemonize::Daemonize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::config::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, DAEMON_PID_PATH, DAEMON_SOCKET_PATH};
+use crate::network::Server;
 
 pub fn start_daemon<F, Fut>(callback: F)
 where
-    F: FnOnce() -> Fut + 'static,
+    F: FnOnce(mpsc::Receiver<DaemonMessage>) -> Fut + 'static,
     Fut: std::future::Future<Output = ()> + 'static,
 {
     let stdout = File::create(DAEMON_OUT_PATH).unwrap();
@@ -31,14 +34,16 @@ where
                 .build()
                 .unwrap()
                 .block_on(async {
-                    tokio::spawn(start_listener());
-                    callback().await;
+                    let (tx, rx) = mpsc::channel::<DaemonMessage>(32);
+                    tokio::spawn(start_listener(tx.clone()));
+                    callback(rx).await;
                 });
         }
         Err(e) => eprintln!("Error: {}", e),
     }
 }
 
+// user sends it to daemon
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Command {
     Add { path: String, name: Option<String> },
@@ -46,11 +51,18 @@ pub enum Command {
     List,
 }
 
+// response from daemon
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Response {
     Ok(String),
     Err(String),
-    List(), // TODO: data
+    List(HashMap<String, String>), // TODO: data
+}
+
+// oneshot message from daemon to server
+pub struct DaemonMessage {
+    pub cmd: Command,
+    pub resp_tx: oneshot::Sender<Response>,
 }
 
 pub async fn send_command(cmd: Command) -> anyhow::Result<Response> {
@@ -68,40 +80,102 @@ pub async fn send_command(cmd: Command) -> anyhow::Result<Response> {
     Ok(resp)
 }
 
-async fn start_listener() {
+async fn start_listener(tx: mpsc::Sender<DaemonMessage>) {
     if Path::new(DAEMON_SOCKET_PATH).exists() {
-        let _ = std::fs::remove_file(DAEMON_SOCKET_PATH);
+        let _ = fs::remove_file(DAEMON_SOCKET_PATH);
     }
 
-    let listener = UnixListener::bind(DAEMON_SOCKET_PATH).unwrap();
+    let listener = match UnixListener::bind(DAEMON_SOCKET_PATH) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Failed to bind Unix socket: {e}");
+            return;
+        }
+    };
 
     loop {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 1024];
-            match socket.read(&mut buf).await {
-                Ok(n) if n > 0 => {
-                    let cmd: Result<Command, _> = bincode::deserialize(&buf[..n]);
-                    let response = match cmd {
-                        Ok(Command::Add { path, name }) => {
-                            Response::Ok("File added".into())
-                        }
-                        Ok(Command::Delete { name }) => {
-                            Response::Ok("File deleted".into())
-                        }
-                        Ok(Command::List) => {
-                            Response::Ok("LIST".into())
-                        }
-                        Err(e) => Response::Err(format!("Invalid command: {e}"))
-                    };
+        let (mut socket, _) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to accept connection: {e}");
+                continue;
+            }
+        };
+        let tx = tx.clone();
 
-                    let encoded = bincode::serialize(&response).unwrap();
-                    let _ = socket.write_all(&encoded).await;
+        tokio::spawn(async move {
+            let mut buf = Vec::new();
+            match socket.read_to_end(&mut buf).await {
+                Ok(n) if n > 0 => {
+                    match bincode::deserialize::<Command>(&buf) {
+                        Ok(cmd) => {
+                            let (resp_tx, resp_rx) = oneshot::channel();
+                            let msg = DaemonMessage { cmd, resp_tx };
+
+                            if tx.send(msg).await.is_err() {
+                                let _ = socket.write_all(
+                                    &bincode::serialize(&Response::Err("Daemon not running".into())).unwrap()
+                                ).await;
+                                return;
+                            }
+
+                            match resp_rx.await {
+                                Ok(resp) => {
+                                    if let Err(e) = socket.write_all(&bincode::serialize(&resp).unwrap()).await {
+                                        eprintln!("Failed to write response: {e}");
+                                    }
+                                }
+                                Err(_) => {
+                                    let _ = socket.write_all(
+                                        &bincode::serialize(&Response::Err("Daemon failed to respond".into())).unwrap()
+                                    ).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let resp = Response::Err(format!("Invalid command: {e}"));
+                            if let Err(e) = socket.write_all(&bincode::serialize(&resp).unwrap()).await {
+                                eprintln!("Failed to write error response: {e}");
+                            }
+                        }
+                    }
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to read from socket: {e}"),
             }
         });
     }
+}
+
+pub async fn handle_daemon_message(mut rx: mpsc::Receiver<DaemonMessage>, server: Server) {
+    while let Some(msg) = rx.recv().await {
+        let DaemonMessage { cmd, resp_tx } = msg;
+        let resp = match cmd {
+            Command::Add { path, name } => {
+                // if name is None than take it from path: .../.../test.txt -> test.txt
+                let name = name.unwrap_or_else(|| {
+                    Path::new(&path)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into()
+                });
+                server.add_file(name, PathBuf::from(path)).await;
+                Response::Ok("File added".into())
+            }
+            Command::Delete { name } => {
+                server.remove_file(&name).await;
+                Response::Ok(format!("File '{name}' deleted"))
+            }
+            Command::List => {
+                let list = server.list_files().await;
+                Response::List(list)
+            }
+        };
+
+        let _ = resp_tx.send(resp);
+    }
+
 }
 
 pub fn stop_daemon() {
@@ -124,7 +198,11 @@ pub fn handle_response(result: anyhow::Result<Response>) {
     match result {
         Ok(Response::Ok(msg)) => println!("{msg}"),
         Ok(Response::Err(msg)) => eprintln!("{msg}"),
-        Ok(_) => {}
+        Ok(Response::List(files)) => {
+            for (k, v) in files {
+                println!("{k} ({v})");
+            }
+        }
         Err(e) => eprint!("Error sending command: {e}"),
     }
 }

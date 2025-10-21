@@ -16,7 +16,7 @@ pub enum Request {
 pub enum Response {
     AuthOk,
     AuthErr,
-    List(HashMap<String, PathBuf>),
+    List(Vec<String>),
     Data(Vec<u8>),
     Error(String),
     Bye,

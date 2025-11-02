@@ -2,14 +2,17 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::fs::File;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_rustls::server::TlsStream;
+use async_compression::tokio::write::ZstdEncoder;
 
-use crate::config::{CERT_PATH, KEY_PATH};
+use crate::config::{CERT_PATH, CHUNK_SIZE, KEY_PATH};
 use crate::network::{create_or_load_tls, recv_message, Request, Response};
 use crate::network::send_message;
+use crate::utils::{get_file_length, hash_file};
 
 pub struct Server {
     password: Option<String>,
@@ -102,8 +105,63 @@ impl Server {
                     let files = files.read().await.keys().cloned().collect::<Vec<String>>();
                     send_message(&mut socket, &Response::List(files)).await?;
                 }
-                Request::Download(name) => {
-                
+                Request::Download { name, offset } => {
+                    // find file
+                    let read_files = files.read().await;
+                    let Some(path) = read_files.get(&name) else {
+                        send_message(&mut socket, &Response::Error("File not found".into())).await?;
+                        continue;
+                    };
+
+                    // try to open file
+                    let Ok(mut file) = File::open(path).await else {
+                        let mut files = files.write().await;
+                        files.remove(&name);
+                        send_message(&mut socket, &Response::Error("Error opening file".into())).await?;
+                        continue;
+                    };
+
+                    send_message(
+                        &mut socket,
+                        &Response::FileInfo {
+                            name: name.clone(),
+                            size: get_file_length(&file).await?,
+                            hash: hash_file(&path).await?,
+                            chunk_size: CHUNK_SIZE as u64,
+                        }
+                    ).await?;
+
+                    file.seek(std::io::SeekFrom::Start(offset)).await?;
+                    let mut encoder = ZstdEncoder::new(&mut socket);
+                    
+                    let mut buf = vec![0u8; CHUNK_SIZE];
+                    let mut index: u64 = offset / CHUNK_SIZE as u64;
+
+                    loop {
+                        let n = file.read(&mut buf).await?;
+                        if n == 0 { break; }
+
+                        let chunk = Response::Chunck { index, data: buf[..n].to_vec() };
+                        send_message(&mut encoder, &chunk).await?;
+
+                        index += 1;
+
+                        match recv_message::<Request, _>(&mut encoder).await {
+                            Ok(Request::Ack { index: ack_idx }) if ack_idx == index - 1 => {}
+                            Ok(Request::Ack { .. }) => {
+                                eprintln!("Client ack mismatch, stopping transfer");
+                                break;
+                            }
+                            _ => {
+                                eprintln!("Client did not ack properly");
+                                break;
+                            }
+                        }
+                    }
+
+                    encoder.shutdown().await?;
+                    send_message(&mut socket, &Response::Done).await?;
+                    println!("File '{name}' sent successfully to client");
                 }
                 Request::Quit => {
                     send_message(&mut socket, &Response::Bye).await?;

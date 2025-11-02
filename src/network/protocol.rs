@@ -1,14 +1,15 @@
-use std::{collections::HashMap, path::PathBuf};
-
 use serde::{Deserialize, Serialize};
 
 // client -> server
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Request {
     Auth(Option<String>),
-    List,
-    Download(String),
     Quit,
+
+    List,
+
+    Download { name: String, offset: u64 },
+    Ack { index: u64 }
 }
 
 // server -> client
@@ -16,8 +17,17 @@ pub enum Request {
 pub enum Response {
     AuthOk,
     AuthErr,
-    List(Vec<String>),
-    Data(Vec<u8>),
-    Error(String),
     Bye,
+
+    List(Vec<String>),
+    Error(String),
+
+    FileInfo {
+        name: String,
+        size: u64,
+        hash: String,
+        chunk_size: u64,
+    },
+    Chunck { index: u64, data: Vec<u8> },
+    Done,
 }

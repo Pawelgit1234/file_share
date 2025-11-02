@@ -15,4 +15,5 @@ rustls = "0.23.32"
 tokio-rustls = "0.26.4"
 rustls-pemfile = "2.2.0"
 rcgen = "0.13"
-
+blake3 = "1.8.2"
+async-compression = { "version" = "0.4", features = ["tokio", "zstd"] }

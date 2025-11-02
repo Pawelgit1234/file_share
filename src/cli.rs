@@ -18,6 +18,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Manage the local file-sharing daemon
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommands,
+    },
+
+    /// Connect to and interact with a remote file server
+    Client {
+        #[command(subcommand)]
+        command: ClientCommands,
+    },
+}
+
+/// Commands for managing your local daemon
+#[derive(Subcommand)]
+pub enum DaemonCommands {
     /// Start the file sharing daemon
     Start {
         /// Port to listen on
@@ -34,7 +50,7 @@ pub enum Commands {
     Add {
         /// Path to the file
         path: String,
-        /// Optional name to use in sharing (default: random id)
+        /// Optional custom name for sharing
         name: Option<String>,
     },
 
@@ -46,4 +62,32 @@ pub enum Commands {
 
     /// List all shared files
     List,
+}
+
+/// Commands for connecting to a remote server
+#[derive(Subcommand)]
+pub enum ClientCommands {
+    /// Connect to a remote server
+    Connect {
+        /// Server address
+        addr: String,
+        /// Optional password
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+
+    /// Disconnect from the current server
+    Disconnect,
+
+    /// Request a list of available files
+    List,
+
+    /// Download a file
+    Download {
+        /// File name to download
+        name: String,
+        /// Save path
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }

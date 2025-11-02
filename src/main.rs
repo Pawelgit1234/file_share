@@ -1,9 +1,9 @@
 mod network;
-mod core;
 
 mod cli;
 mod daemon;
 mod config;
+mod utils;
 
 use clap::Parser;
 

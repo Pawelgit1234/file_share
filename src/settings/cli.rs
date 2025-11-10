@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::config::{AUTHOR, VERSION, ABOUT, LONG_ABOUT, NAME};
+use super::config::{AUTHOR, VERSION, ABOUT, LONG_ABOUT, NAME};
 
 /// P2P File Share CLI
 #[derive(Parser)]
@@ -13,27 +13,27 @@ use crate::config::{AUTHOR, VERSION, ABOUT, LONG_ABOUT, NAME};
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Command,
 }
 
 #[derive(Subcommand)]
-pub enum Commands {
+pub enum Command {
     /// Manage the local file-sharing daemon
     Daemon {
         #[command(subcommand)]
-        command: DaemonCommands,
+        command: ServerCliCommand,
     },
 
     /// Connect to and interact with a remote file server
     Client {
         #[command(subcommand)]
-        command: ClientCommands,
+        command: ClientCliCommand,
     },
 }
 
 /// Commands for managing your local daemon
 #[derive(Subcommand)]
-pub enum DaemonCommands {
+pub enum ServerCliCommand {
     /// Start the file sharing daemon
     Start {
         /// Port to listen on
@@ -66,7 +66,7 @@ pub enum DaemonCommands {
 
 /// Commands for connecting to a remote server
 #[derive(Subcommand)]
-pub enum ClientCommands {
+pub enum ClientCliCommand {
     /// Connect to a remote server
     Connect {
         /// Server address

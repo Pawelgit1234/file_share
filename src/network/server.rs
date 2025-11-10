@@ -9,9 +9,8 @@ use tokio::sync::RwLock;
 use tokio_rustls::server::TlsStream;
 use async_compression::tokio::write::ZstdEncoder;
 
-use crate::config::{CERT_PATH, CHUNK_SIZE, KEY_PATH};
-use crate::network::{create_or_load_tls, recv_message, Request, Response};
-use crate::network::send_message;
+use crate::settings::{CERT_PATH, CHUNK_SIZE, KEY_PATH};
+use crate::network::{create_or_load_tls, recv_message, send_message, Request, Response};
 use crate::utils::{get_file_length, hash_file};
 
 pub struct Server {

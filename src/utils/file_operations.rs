@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
-use crate::config::CHUNK_SIZE;
+use crate::settings::CHUNK_SIZE;
 
 pub async fn hash_file(path: &PathBuf) -> anyhow::Result<String> {
     let mut hasher = blake3::Hasher::new();
